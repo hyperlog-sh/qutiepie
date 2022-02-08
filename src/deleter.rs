@@ -1,9 +1,10 @@
 // third party
 use snafu::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tracing::instrument;
 
 // internal
-use crate::consumer::{MessagePostProcessing, SqsConsumer};
+use crate::consumer::MessagePostProcessing;
 use crate::counter::{CounterError, MessagesBeingProcessedCounter};
 use crate::sqs::SqsClient;
 
@@ -79,6 +80,7 @@ impl MessageDeleter {
         }
     }
 
+    #[instrument(skip(self))]
     fn spawn_message_deleter(&self, message_receipt_handle: String) {
         let client = self.client.clone();
         let queue_url = self.queue_url.clone();

@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 // third party
 use snafu::prelude::*;
+use tracing::instrument;
 
 #[derive(Debug)]
 pub(crate) struct MessagesBeingProcessedCounter {
@@ -30,6 +31,7 @@ pub enum CounterError {
     },
 }
 
+#[allow(clippy::mutex_atomic)] // Consider an atomic IF required
 impl MessagesBeingProcessedCounter {
     pub(crate) fn new(max: usize) -> Self {
         Self {
@@ -38,6 +40,7 @@ impl MessagesBeingProcessedCounter {
         }
     }
 
+    #[instrument]
     pub(crate) fn decrement(&self) -> Result<(), CounterError> {
         let mut counter = self.counter.lock().unwrap();
         match (*counter).checked_sub(1) {
@@ -52,6 +55,7 @@ impl MessagesBeingProcessedCounter {
         }
     }
 
+    #[instrument]
     pub(crate) fn increment(&self) -> Result<(), CounterError> {
         let mut counter = self.counter.lock().unwrap();
         match (*counter).checked_add(1) {
@@ -67,6 +71,7 @@ impl MessagesBeingProcessedCounter {
         }
     }
 
+    #[instrument]
     pub(crate) fn decrement_by(&self, amount: usize) -> Result<(), CounterError> {
         let mut counter = self.counter.lock().unwrap();
         match (*counter).checked_sub(amount) {
@@ -81,6 +86,7 @@ impl MessagesBeingProcessedCounter {
         }
     }
 
+    #[instrument]
     pub(crate) fn increment_by(&self, amount: usize) -> Result<(), CounterError> {
         let mut counter = self.counter.lock().unwrap();
         match (*counter).checked_add(amount) {
@@ -96,24 +102,26 @@ impl MessagesBeingProcessedCounter {
         }
     }
 
+    #[instrument]
     pub(crate) fn available_space(&self) -> usize {
         let counter = self.counter.lock().unwrap();
         self.max - *counter
     }
 
     /// This is marked risky because there's no easy way to guarantee no usize underflow errors without more indirection.
+    #[instrument(skip(f))]
     pub(crate) fn risky_run_with_lock<F, R>(&self, f: F) -> Result<R, CounterError>
     where
         F: FnOnce(std::sync::MutexGuard<'_, usize>) -> R,
     {
-        let mut counter = self.counter.lock().unwrap();
+        let counter = self.counter.lock().unwrap();
         let res = f(counter);
 
         self.check_bounds().map(|_| res)
     }
 
     fn check_bounds(&self) -> Result<(), CounterError> {
-        let mut counter = self.counter.lock().unwrap();
+        let counter = self.counter.lock().unwrap();
         if *counter > self.max {
             Err(CounterError::InvalidBounds {
                 counter: *counter,

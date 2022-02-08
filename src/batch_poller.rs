@@ -4,12 +4,12 @@ use std::ops::Div;
 
 // third party
 use aws_sdk_sqs::model::Message as SqsMessage;
+use futures::future;
 use snafu::prelude::*;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::oneshot;
-use tokio::time;
+use tracing::instrument;
 
 // internal
 use crate::consumer::{MessagePostProcessing, SqsConsumer};
@@ -20,10 +20,11 @@ use crate::process::ProcessWithHeartbeat;
 use crate::receiver::SqsReceive;
 
 #[derive(Debug, Snafu)]
-pub(crate) enum BatchPollerError {
+pub enum BatchPollerError {
     CounterError { source: CounterError },
     DeleterError { source: DeleterError },
     InvalidLeftoverBatchSize { source: ReceiveBatchSizeError },
+    Unexpected { message: String },
 }
 
 impl BatchPollerError {
@@ -34,6 +35,7 @@ impl BatchPollerError {
                 matches!(source, DeleterError::CounterError { .. })
             }
             BatchPollerError::InvalidLeftoverBatchSize { .. } => true,
+            BatchPollerError::Unexpected { .. } => false,
         }
     }
 }
@@ -41,7 +43,7 @@ impl BatchPollerError {
 #[derive(Debug)]
 pub(crate) struct BatchPoller<M, F>
 where
-    M: Fn(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
     F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
 {
     consumer: SqsConsumer<M, F>,
@@ -51,7 +53,7 @@ where
 
 impl<M, F> BatchPoller<M, F>
 where
-    M: Fn(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
     F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
 {
     pub(crate) fn new(consumer: SqsConsumer<M, F>) -> Self {
@@ -66,7 +68,8 @@ where
         }
     }
 
-    pub(crate) async fn start(mut self, stop_signal: oneshot::Receiver<()>) {
+    #[instrument(skip(self))]
+    pub(crate) async fn start(mut self) -> Result<(), BatchPollerError> {
         let (post_processing_tx, post_processing_rx) = mpsc::unbounded_channel();
         let (deleter_err_tx, mut deleter_err_rx) = mpsc::unbounded_channel();
         let (poll_err_tx, mut poll_err_rx) = mpsc::unbounded_channel();
@@ -78,48 +81,49 @@ where
                 .await;
 
             tokio::select! {
+                biased;
                 de = deleter_err_rx.recv() => match de {
                     Some(err) => {
                         if err.is_fatal() {
                             tracing::error!(?err, "Fatal error in deleter; skipping graceful shutdown");
-                            return;
+                            return Err(BatchPollerError::DeleterError { source: err });
                         } else {
                             tracing::warn!(?err, "Non-fatal error in deleter");
-                            break;
+                            return Ok(())
                         }
                     }
                     None => {
                         tracing::warn!("Deleter error channel closed");
-                        break;
+                        return Err(BatchPollerError::Unexpected { message: "Deleter error channel closed".to_string() })
                     }
                 },
                 pe = poll_err_rx.recv() => match pe {
                     Some(err) => {
                         if err.is_fatal() {
                             tracing::error!(?err, "Fatal error in poller; skipping graceful shutdown");
-                            return;
+                            return Err(err)
                         } else {
                             tracing::warn!(?err, "Non-fatal error in poller");
-                            break;
+                            return Ok(())
                         }
                     }
                     None => {
                         tracing::warn!("Poller error channel closed");
-                        break;
+                        return Err(BatchPollerError::Unexpected { message: "Poller error channel closed".to_string() })
                     }
                 },
-                _ = stop_signal => break,
+
+                // The idea is that with a biased select loop and cancellation safe futures this ensures that
+                // the select does not await on receiving errors but will match when they do resolve.
+                _ = future::ready(1) => {
+                    tracing::debug!("no errors so continue polling");
+                    continue
+                },
             }
         }
-
-        self.shutdown().await;
     }
 
-    /// This should change to a more intelligent implementation later.
-    async fn shutdown(&self) {
-        time::sleep(self.consumer.shutdown_duration).await
-    }
-
+    #[instrument(skip(self, rx, errors_tx))]
     fn spawn_finish_line(
         &self,
         rx: UnboundedReceiver<MessagePostProcessing>,
@@ -133,6 +137,7 @@ where
         tokio::spawn(deleter.listen());
     }
 
+    #[instrument(skip(self, post_processing_tx, error_tx))]
     async fn batch_poll(
         &mut self,
         error_tx: UnboundedSender<BatchPollerError>,
@@ -165,6 +170,7 @@ where
                     receiver.run();
                 }
 
+                drop(tx); // Drop the original tx so that the receive loop will stop when all receivers have responded
                 while let Some(r) = rx.recv().await {
                     match r {
                         Ok(Some(messages)) => {
@@ -197,6 +203,7 @@ where
         }
     }
 
+    #[instrument(skip(self, post_processing_tx))]
     fn process_messages(
         &mut self,
         messages: Vec<SqsMessage>,
@@ -232,6 +239,7 @@ where
         }
     }
 
+    #[instrument(skip(self, post_processing_tx))]
     fn process_from_buffer(
         &mut self,
         post_processing_tx: UnboundedSender<MessagePostProcessing>,
@@ -270,6 +278,7 @@ where
         }
     }
 
+    #[instrument(skip(self))]
     fn messages_to_process(
         &mut self,
         messages: Vec<SqsMessage>,
@@ -289,6 +298,7 @@ where
             .context(CounterSnafu)
     }
 
+    #[instrument(skip(counter_guard))]
     fn currently_processable_messages_with_rest_buffered(
         mut messages: Vec<SqsMessage>,
         message_buffer: &mut Vec<SqsMessage>,
@@ -301,11 +311,11 @@ where
         };
 
         let limit = processing_concurrency_limit - *counter_guard;
-
         let to_process = if limit >= messages.len() {
             messages
         } else {
             let currently_possible = messages.split_off(limit);
+
             message_buffer.append(&mut messages);
             currently_possible
         };
@@ -314,6 +324,7 @@ where
         Some(to_process)
     }
 
+    #[instrument(skip(self))]
     fn buffered_messages_to_process(
         &mut self,
     ) -> Result<Option<Vec<SqsMessage>>, BatchPollerError> {
@@ -327,6 +338,7 @@ where
             .context(CounterSnafu)
     }
 
+    #[instrument(skip(message_buffer, processing_concurrency_limit))]
     fn drain_buffer_till_limit(
         message_buffer: &mut Vec<SqsMessage>,
         processing_concurrency_limit: usize,
@@ -348,6 +360,7 @@ where
         Some(to_process)
     }
 
+    #[instrument(skip(self))]
     fn batch_sizes(&self) -> Result<Vec<ReceiveBatchSize>, BatchPollerError> {
         let mut batch_sizes = vec![];
 

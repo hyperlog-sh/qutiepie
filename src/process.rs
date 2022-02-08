@@ -6,6 +6,7 @@ use aws_sdk_sqs::model::Message as SqsMessage;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time;
+use tracing::instrument;
 
 // internal
 use crate::consumer::MessagePostProcessing;
@@ -16,7 +17,7 @@ use crate::sqs::SqsClient;
 #[derive(Debug)]
 pub(crate) struct ProcessWithHeartbeat<M, F>
 where
-    M: Fn(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
     F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
 {
     pub(crate) client: SqsClient,
@@ -30,7 +31,7 @@ where
 
 impl<M, F> ProcessWithHeartbeat<M, F>
 where
-    M: Fn(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
     F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
 {
     pub(crate) fn process(self) {
@@ -79,6 +80,7 @@ where
         });
     }
 
+    #[instrument(skip(message_processor, tx))]
     fn spawn_message_processor(
         message_processor: M,
         message: SqsMessage,

@@ -1,10 +1,9 @@
 // third party
-use snafu::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 
 // internal
 use crate::parser::*;
-use crate::sqs::{ReceiveMessageResult, SqsClient, SqsClientError};
+use crate::sqs::{ReceiveMessageResult, SqsClient};
 
 #[derive(Debug)]
 pub(crate) struct SqsReceive {

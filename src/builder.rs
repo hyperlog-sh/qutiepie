@@ -4,7 +4,6 @@ use std::future::Future;
 // third party
 use aws_sdk_sqs::model::Message as SqsMessage;
 use snafu::prelude::*;
-use tokio::time;
 
 // internal
 use crate::consumer::{MessagePostProcessing, SqsConsumer};
@@ -14,7 +13,7 @@ use crate::sqs::SqsClient;
 #[derive(Debug)]
 pub struct SqsConsumerBuilder<M, F>
 where
-    M: Fn(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
     F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
 {
     client: Option<SqsClient>,
@@ -25,7 +24,6 @@ where
     receive_message_wait_time: Option<ReceiveWaitTime>,
     message_processor: Option<M>,
     message_processing_concurrency_limit: Option<usize>,
-    shutdown_duration: Option<time::Duration>,
 }
 
 #[derive(Debug, Snafu)]
@@ -61,9 +59,22 @@ pub enum BuilderError {
 
 impl<M, F> SqsConsumerBuilder<M, F>
 where
-    M: Fn(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
     F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
 {
+    pub fn new() -> Self {
+        SqsConsumerBuilder {
+            client: None,
+            queue_url: None,
+            visibility_timeout: None,
+            heartbeat_interval_seconds: None,
+            receive_batch_size: None,
+            receive_message_wait_time: None,
+            message_processor: None,
+            message_processing_concurrency_limit: None,
+        }
+    }
+
     pub fn client(mut self, client: SqsClient) -> Self {
         self.client = Some(client);
         self
@@ -110,11 +121,6 @@ where
         self
     }
 
-    pub fn shutdown_duration(mut self, input: time::Duration) -> Self {
-        self.shutdown_duration = Some(input);
-        self
-    }
-
     pub fn build(self) -> Result<SqsConsumer<M, F>, BuilderError> {
         use BuilderError::*;
 
@@ -142,10 +148,6 @@ where
                     input: heartbeat_interval_seconds,
                 },
             )?;
-
-        let shutdown_duration = self.shutdown_duration.ok_or(RequiredArgumentNotProvided {
-            message: "shutdown duration must be provided".to_string(),
-        })?;
 
         let receive_batch_size = self.receive_batch_size.ok_or(RequiredArgumentNotProvided {
             message: "receive batch size must be provided".to_string(),
@@ -184,7 +186,16 @@ where
             receive_message_wait_time,
             processing_concurrency_limit,
             message_processor,
-            shutdown_duration,
         })
+    }
+}
+
+impl<M, F> Default for SqsConsumerBuilder<M, F>
+where
+    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
