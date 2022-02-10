@@ -80,7 +80,7 @@ where
         });
     }
 
-    #[instrument(skip(message_processor, tx))]
+    #[instrument(skip(message_processor, message, tx))]
     fn spawn_message_processor(
         message_processor: M,
         message: SqsMessage,
