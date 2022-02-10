@@ -17,8 +17,8 @@ use crate::sqs::SqsClient;
 #[derive(Debug)]
 pub(crate) struct ProcessWithHeartbeat<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     pub(crate) client: SqsClient,
     pub(crate) queue_url: String,
@@ -31,8 +31,8 @@ where
 
 impl<M, F> ProcessWithHeartbeat<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     pub(crate) fn process(self) {
         tokio::spawn(async move {

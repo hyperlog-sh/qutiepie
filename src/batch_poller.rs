@@ -43,8 +43,8 @@ impl BatchPollerError {
 #[derive(Debug)]
 pub(crate) struct BatchPoller<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     consumer: SqsConsumer<M, F>,
     in_flight_counter: MessagesBeingProcessedCounter,
@@ -53,8 +53,8 @@ where
 
 impl<M, F> BatchPoller<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     pub(crate) fn new(consumer: SqsConsumer<M, F>) -> Self {
         let in_flight_counter =

@@ -34,8 +34,8 @@ pub enum ConsumerError {
 #[derive(Debug)]
 pub struct SqsConsumer<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     pub client: SqsClient,
     pub queue_url: String,
@@ -49,8 +49,8 @@ where
 
 impl<M, F> SqsConsumer<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     pub async fn poll(self) -> Result<(), ConsumerError> {
         let poller = BatchPoller::new(self);

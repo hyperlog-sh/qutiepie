@@ -13,8 +13,8 @@ use crate::sqs::SqsClient;
 #[derive(Debug)]
 pub struct SqsConsumerBuilder<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     client: Option<SqsClient>,
     queue_url: Option<String>,
@@ -59,8 +59,8 @@ pub enum BuilderError {
 
 impl<M, F> SqsConsumerBuilder<M, F>
 where
-    M: FnOnce(SqsMessage) -> F + Clone + Sync + Send + 'static,
-    F: Future<Output = MessagePostProcessing> + Sync + Send + 'static,
+    M: FnOnce(SqsMessage) -> F + Clone + Send + 'static,
+    F: Future<Output = MessagePostProcessing> + Send + 'static,
 {
     pub fn new() -> Self {
         SqsConsumerBuilder {
